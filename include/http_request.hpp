@@ -89,7 +89,8 @@ enum class StatusCode
     NETWORKAUTHENTICATIONREQUIRED = 511
 };
 
-using Headers = std::vector< std::string >;
+// using Headers = std::vector< std::string >;
+using Headers = std::unordered_map< std::string, std::string >;
 using Parameters = std::unordered_map< std::string, std::string >;
 
 struct Request final
@@ -276,6 +277,19 @@ struct ByteStream
     }
 
     auto
+    is_crlf( ) const
+    {
+        constexpr char crlf[] = {'\r', '\n'};
+        return memcmp( &_buffer[ _position ], crlf, sizeof crlf ) == 0;
+    }
+
+    auto
+    is_empty( )
+    {
+        return _buffer.size( ) == _position;
+    }
+
+    auto
     get_line( )
     {
         if ( _buffer.empty( ) )
@@ -286,8 +300,8 @@ struct ByteStream
             if ( _buffer[ i ] == '\n' )
             {
                 auto s = std::string{reinterpret_cast< const char* >( &_buffer[ _position ] ),
-                                     i + 1};
-                _position += i;
+                                     i + 1 - _position};
+                _position = i + 1;
                 return s;
             }
         }
@@ -301,18 +315,9 @@ struct ByteStream
 };
 
 auto
-get_line( const char* ptr, const size_t sz )
+has_header( const Response& res, std::string_view key )
 {
-    if ( !ptr )
-        return std::string{};
-
-    for ( size_t i = 0; i < sz; i++ )
-    {
-        if ( ptr[ i ] == '\n' )
-            return std::string{ptr, i + 1};
-    }
-
-    return std::string{ptr, sz};
+    return res._headers.find( key.data( ) ) != res._headers.end( );
 }
 
 auto
@@ -321,7 +326,7 @@ read_response_line( std::string_view line, Response& res )
     const static std::regex re( "(HTTP/1\\.[01]) (\\d+?) .*\r\n" );
 
     std::cmatch m;
-    if ( std::regex_match( line.data( ), m, re ) )
+    if ( std::regex_match( line.begin( ), line.end( ), m, re ) )
     {
         res._version = std::string( m[ 1 ] );
         res._status = static_cast< StatusCode >( std::stoi( std::string( m[ 2 ] ) ) );
@@ -333,15 +338,57 @@ read_response_line( std::string_view line, Response& res )
 }
 
 auto
-read_headers( Headers& headers )
+read_headers( ByteStream& bs, Headers& headers )
 {
+    while ( true )
+    {
+        if ( bs.is_crlf( ) && !bs.is_empty( ) )
+            break;
+
+        auto line = bs.get_line( );
+        std::string_view sv = line;
+
+        static const std::regex re( "((.+?):[\t ]*(.+)).*\r\n" );
+
+        std::cmatch m;
+        if ( std::regex_match( sv.begin( ), sv.end( ), m, re ) )
+        {
+            auto key = std::string( m[ 2 ] );
+            auto val = std::string( m[ 3 ] );
+            headers.emplace( key, val );
+        }
+    }
+
     return true;
 }
 
 auto
-set_nonblocking( const int sock, bool nonblocking )
+read_content_with_lenght( ByteStream& bs )
 {
-    auto flags = fcntl( sock, F_GETFL, 0 );
+}
+
+auto
+read_content_without_lenght( ByteStream& bs )
+{
+}
+
+auto
+read_conetent( ByteStream& bs, Response& res )
+{
+    if ( has_header( res, "Content-Length" ) )
+    {
+        read_content_with_lenght( bs );
+    }
+    else
+    {
+        read_content_without_lenght( bs );
+    }
+}
+
+auto
+set_nonblocking( const int sock, const bool nonblocking )
+{
+    const auto flags = fcntl( sock, F_GETFL, 0 );
     fcntl( sock, F_SETFL, nonblocking ? ( flags | O_NONBLOCK ) : ( flags & ( ~O_NONBLOCK ) ) );
 }
 
@@ -398,8 +445,8 @@ make_request( const std::string_view url,
     const auto body = detail::make_body( parameters );
 
     std::string request_data = std::string{method} + " " + path + " HTTP/1.1\r\n";
-    for ( const std::string& header : headers )
-        request_data += header + "\r\n";
+    for ( const auto & [ k, v ] : headers )
+        request_data += k + " " + v + "\r\n";
 
     request_data += "Host: " + domain + "\r\n";
     request_data += "Content-Length: " + std::to_string( body.size( ) ) + "\r\n";
@@ -454,13 +501,16 @@ make_request( const std::string_view url,
 
         auto line = response_data.get_line( );
 
-        if ( !detail::read_response_line( line, res ) || !detail::read_headers( res._headers ) )
+        if ( !detail::read_response_line( line, res )
+             || !detail::read_headers( response_data, res._headers ) )
         {
             break;
         }
+
+        detail::read_conetent( response_data, res );
     }
 
-    // std::cout << res._version << " " << (int)res._status << std::endl;
+    std::cout << res._version << " " << (int)res._status << std::endl;
 
     close( sock );
 

@@ -7,7 +7,7 @@ main( int argc, char* argv[] )
 {
     (void)argc;
     (void)argv;
-    cpp_http::make_request( "http://httpbin.org/bytes/5000",
+    cpp_http::make_request( "http://httpbin.org/get",
                             "GET",
                             {},
                             {},
