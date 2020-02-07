@@ -9,8 +9,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <iostream>
-
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -98,7 +96,6 @@ namespace cpp_http {
         constexpr char CONTENT_LENGHT[] = "Content-Length";
     } // namespace HeadersKeys
 
-    // using Headers = std::vector< std::string >;
     using Headers = std::unordered_map<std::string, std::string>;
     using Parameters = std::unordered_map<std::string, std::string>;
     using RawBuffer = std::vector<uint8_t>;
@@ -328,11 +325,11 @@ namespace cpp_http {
                     }
                 }
 
-                return std::string{reinterpret_cast<const char *>( &_buffer[_position] ), _buffer.size( )};
+                return std::string{};
             }
 
             auto skip( const size_t n ) {
-                if ( _position + n < _buffer.size( ) ) {
+                if ( _position + n <= _buffer.size( ) ) {
                     _position += n;
                     return true;
                 }
@@ -425,9 +422,6 @@ namespace cpp_http {
             return true;
         }
 
-        auto read_content_chunked( SocketStream &bs, Response &res ) {
-        }
-
         auto read_content_with_lenght( SocketStream &bs, const uint64_t lenght, Response &res ) {
             ssize_t total = 0;
             while ( true ) {
@@ -439,6 +433,7 @@ namespace cpp_http {
                 res._body.insert( std::end( res._body ), std::begin( buf.value( ) ), std::end( buf.value( ) ) );
 
                 total += buf.value( ).size( );
+                bs._position +=  buf.value( ).size( );
 
                 if ( total >= lenght )
                     break;
@@ -448,6 +443,41 @@ namespace cpp_http {
         }
 
         auto read_content_without_lenght( SocketStream &bs, Response &res ) {
+            while ( true ) {
+                auto buf = bs.buffered_read( DEFAULT_READ_BUFFER_SIZE );
+                if ( !buf )
+                    break;
+
+                res._body.insert( std::end( res._body ), std::begin( buf.value( ) ), std::end( buf.value( ) ) );
+            }
+        }
+
+        auto read_content_chunked( SocketStream &bs, Response &res ) {
+            if ( bs.is_crlf( ) )
+                bs.skip( 2 ); // Skip /r/n
+
+            auto chunk_len = 0;
+
+            while ( true ) {
+                auto buf = bs.buffered_read( DEFAULT_READ_BUFFER_SIZE );
+
+                if ( !buf || buf.value().empty() )
+                    break;
+
+                auto line = bs.get_line( );
+                if ( line.empty( ) )
+                    continue;
+
+                chunk_len = std::stoi( line, 0, 16 );
+
+                if (chunk_len <= 0)
+                    break;
+
+                if ( !read_content_with_lenght( bs, chunk_len, res ) )
+                    return false;
+            }
+
+            return true;
         }
 
         auto read_conetent( SocketStream &bs, Response &res ) {
@@ -458,7 +488,7 @@ namespace cpp_http {
             auto ret = false;
 
             if ( is_chunked_transfer_encoding( res._headers ) ) {
-                read_content_chunked( bs, res );
+                ret = read_content_chunked( bs, res );
             } else if ( has_header( res._headers, HeadersKeys::CONTENT_LENGHT ) ) {
                 auto len = get_header_value<uint64_t>( res._headers, HeadersKeys::CONTENT_LENGHT );
                 ret = read_content_with_lenght( bs, len.value( ), res );
@@ -551,7 +581,7 @@ namespace cpp_http {
         // Read response
         while ( response_data.is_readable( ) ) {
             auto buf = response_data.buffered_read( DEFAULT_READ_BUFFER_SIZE );
-            if (!buf) {
+            if ( !buf ) {
                 break;
             }
 
@@ -564,12 +594,6 @@ namespace cpp_http {
             if ( detail::read_conetent( response_data, res ) )
                 break;
         }
-
-        std::cout << res._version << " " << (int)res._status << '\n';
-        for ( auto ch : res._body ) {
-            std::cout << static_cast<char>( ch );
-        }
-        std::cout << std::endl;
 
         close( sock );
 
