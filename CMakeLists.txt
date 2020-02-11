@@ -1,12 +1,29 @@
-cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 
 project(cpp_http_request VERSION 0.1.1)
+
+include(FetchContent)
+include(CTest)
 
 set(APP_NAME cpp_http_request_tests)
 set(LIB_NAME cpp_http_request)
 
 add_library(${LIB_NAME} INTERFACE)
 target_include_directories(${LIB_NAME} INTERFACE include/)
+
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG        release-1.8.1
+)
+
+FetchContent_GetProperties(googletest)
+if(NOT googletest_POPULATED)
+  FetchContent_Populate(googletest)
+  add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR})
+endif()
+
+enable_testing()
 
 set(SOURCES
     src/http_request_tests.cc
@@ -32,4 +49,6 @@ target_compile_options(${APP_NAME} PUBLIC
     -Wshadow
     )
 
-target_link_libraries(${APP_NAME} PUBLIC ${LIB_NAME})
+add_test(UnitTests ${APP_NAME})
+
+target_link_libraries(${APP_NAME} PUBLIC ${LIB_NAME} gtest gmock gtest_main)
