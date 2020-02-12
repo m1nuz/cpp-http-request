@@ -7,6 +7,7 @@ include(CTest)
 
 set(APP_NAME cpp_http_request_tests)
 set(LIB_NAME cpp_http_request)
+set(SHARED_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_library(${LIB_NAME} INTERFACE)
 target_include_directories(${LIB_NAME} INTERFACE include/)
@@ -19,8 +20,19 @@ FetchContent_Declare(
 
 FetchContent_GetProperties(googletest)
 if(NOT googletest_POPULATED)
-  FetchContent_Populate(googletest)
-  add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR})
+    FetchContent_Populate(googletest)
+    add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR})
+endif()
+
+FetchContent_Declare(
+  json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.7.3
+)
+
+if(NOT json_POPULATED)
+    FetchContent_Populate(json)
+    set(json_INCLUDE_DIR ${json_SOURCE_DIR}/include)
 endif()
 
 enable_testing()
@@ -33,6 +45,7 @@ add_executable(${APP_NAME} ${SOURCES} ${HEADERS})
 target_include_directories(${APP_NAME} PUBLIC
     ${SHARED_INCLUDE_DIR}
     ${EXTERNAL_INCLUDE_DIR}
+    ${json_INCLUDE_DIR}
 )
 
 set_target_properties(${APP_NAME} PROPERTIES
