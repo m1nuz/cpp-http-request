@@ -22,5 +22,5 @@ script:
     - $CXX --version
     - mkdir build
     - cd build
-    - cmake -DCMAKE_CXX_FLAGS="${EXTRA_FLAGS}" .. && cmake --build .
-    - ctest
+    - cmake -DCMAKE_CXX_FLAGS="${EXTRA_FLAGS}" .. && cmake --build . --config Release
+    - ctest --output-on-failure
