@@ -88,7 +88,7 @@ namespace cpp_http {
     };
 
     constexpr size_t DEFAULT_READ_BUFFER_SIZE = 4096;
-    constexpr time_t DEFAULT_SOCKET_READ_TIMEOUT_SEC = 5;
+    constexpr time_t DEFAULT_SOCKET_READ_TIMEOUT_SEC = 10;
 
     namespace HeadersKeys {
         constexpr char CONTENT_ENCODING[] = "Content-Encoding";
@@ -346,17 +346,6 @@ namespace cpp_http {
             return headers.find( key.data( ) ) != headers.end( );
         }
 
-        // auto
-        // get_header_value( const Headers& headers, std::string_view key ) -> std::optional< std::string >
-        //{
-        //    if ( auto it = headers.find( key.data( ) ); it != headers.end( ) )
-        //    {
-        //        return {it->second};
-        //    }
-
-        //    return {};
-        //}
-
         template <typename T> auto get_header_value( const Headers &headers, std::string_view key ) -> std::optional<T> {
             std::string value;
             if ( auto it = headers.find( key.data( ) ); it != headers.end( ) ) {
@@ -545,18 +534,28 @@ namespace cpp_http {
 
         detail::set_nonblocking( sock, true );
 
+        const auto is_get_method = method == "GET";
+        const auto is_post_method = method == "POST";
+
         // Prepare request data
         const auto body = detail::make_body( parameters );
 
-        std::string request_data = std::string{method} + " " + path + " HTTP/1.1\r\n";
-        for ( const auto &[k, v] : headers )
-            request_data += k + " " + v + "\r\n";
+        std::string request_data = std::string{method} + " " + path;
+        if (is_get_method)
+            request_data +="?" + body;
+        request_data +=" HTTP/1.1\r\n";
 
         request_data += "Host: " + domain + "\r\n";
-        request_data += "Content-Length: " + std::to_string( body.size( ) ) + "\r\n";
+
+        if (is_post_method)
+            request_data += "Content-Length: " + std::to_string( body.size( ) ) + "\r\n";
+
+        for ( const auto &[k, v] : headers )
+            request_data += k + ": " + v + "\r\n";
 
         request_data += "\r\n";
-        request_data += body;
+        if (is_post_method)
+            request_data += body;
 
         constexpr int flags = MSG_NOSIGNAL;
 

@@ -3,8 +3,11 @@
 #include <iostream>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
-//#define ENABLE_OUTPUT
+using json = nlohmann::json;
+
+#define ENABLE_OUTPUT
 
 #ifdef ENABLE_OUTPUT
 void print( const cpp_http::Response &res ) {
@@ -34,6 +37,31 @@ TEST( HttpRequest_GET, Get_HttpBin ) {
         if (auto it = res._headers.find( "Content-Length" ); it != res._headers.end() ) {
             const auto size = std::stoi( it->second );
             EXPECT_GE( res._body.size(), size);
+        }
+
+        print( res );
+    } );
+}
+
+TEST( HttpRequest_GET, GetWithParams_HttpBin ) {
+    constexpr char RequestURI[] = "http://httpbin.org/get";
+
+    const auto in_args = std::unordered_map<std::string, std::string>{{"foo", "1"}, {"bar", "2"}};
+
+    cpp_http::make_request( RequestURI, "GET", in_args, {}, [=]( const cpp_http::Response &res ) {
+        EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
+        EXPECT_EQ( res._version, "HTTP/1.1" );
+
+        if (auto it = res._headers.find( "Content-Length" ); it != res._headers.end() ) {
+            const auto size = std::stoi( it->second );
+            EXPECT_GE( res._body.size(), size);
+        }
+
+        auto j = json::parse( res._body.begin(), res._body.end() );
+        if (j.find("args") != j.end()) {
+            auto args = j["args"].get<std::unordered_map<std::string, std::string>>();
+
+            EXPECT_EQ( in_args, args );
         }
 
         print( res );
@@ -99,4 +127,42 @@ TEST( HttpRequest_GET, GetStream_Postman ) {
     } );
 }
 
+TEST( HttpRequest_POST, Post_HttpBin ) {
+    constexpr char RequestURI[] = "http://httpbin.org/post";
+
+    cpp_http::make_request( RequestURI, "POST", {}, {}, [=]( const cpp_http::Response &res ) {
+        EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
+        EXPECT_EQ( res._version, "HTTP/1.1" );
+
+        if (auto it = res._headers.find( "Content-Length" ); it != res._headers.end() ) {
+            const auto size = std::stoi( it->second );
+            EXPECT_GE( res._body.size(), size);
+        }
+
+        print( res );
+    } );
+}
+
+
+TEST( HttpRequest_POST, PostForm_HttpBin ) {
+    constexpr char RequestURI[] = "http://httpbin.org/post";
+    const auto in_args = std::unordered_map<std::string, std::string>{{"foo", "1"}, {"bar", "2"}};
+
+    cpp_http::make_request( RequestURI, "POST", in_args, {{"Content-Type", "application/x-www-form-urlencoded"}}, [=]( const cpp_http::Response &res ) {
+        EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
+        EXPECT_EQ( res._version, "HTTP/1.1" );
+
+        if (auto it = res._headers.find( "Content-Length" ); it != res._headers.end() ) {
+            const auto size = std::stoi( it->second );
+            EXPECT_GE( res._body.size(), size);
+        }
+
+        auto j = json::parse( res._body.begin(), res._body.end() );
+        EXPECT_NE(j.find("form"), j.end());
+        auto args = j["form"].get<std::unordered_map<std::string, std::string>>();
+        EXPECT_EQ( in_args, args );
+
+        print( res );
+    } );
+}
 
