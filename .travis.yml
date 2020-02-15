@@ -1,0 +1,21 @@
+# Enable C++ support
+language: cpp
+
+# Install dependencies
+install:
+    - CMAKE_VERSION="3.16.4"
+    - CMAKE_INSTALL_DIR=${HOME}/cmake-${CMAKE_VERSION}
+    - mkdir ${CMAKE_INSTALL_DIR}/
+    - wget --no-check-certificate "http://cmake.org/files/v3.16/cmake-${CMAKE_VERSION}-Linux-x86_64.sh"
+    - chmod +x cmake-${CMAKE_VERSION}-Linux-x86_64.sh
+    - ./cmake-${CMAKE_VERSION}-Linux-x86_64.sh --prefix=${CMAKE_INSTALL_DIR} --skip-license
+    - export PATH=${CMAKE_INSTALL_DIR}/bin:$PATH
+# verify installed versions
+    - which cmake
+    - cmake --version
+
+# Build steps
+script:
+    - uname -a
+    - $CXX --version
+    - cmake -DCMAKE_CXX_FLAGS="${EXTRA_FLAGS}" .. && cmake --build .
