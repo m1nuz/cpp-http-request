@@ -15,6 +15,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#ifdef CPP_HTTP_REQUEST_SUPPORT_SSL
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#endif // CPP_HTTP_REQUEST_SUPPORT_SSL
+
 namespace cpp_http {
 
     enum class StatusCode {
@@ -88,7 +93,7 @@ namespace cpp_http {
     };
 
     constexpr size_t DEFAULT_READ_BUFFER_SIZE = 4096;
-    constexpr time_t DEFAULT_SOCKET_READ_TIMEOUT_SEC = 10;
+    constexpr time_t DEFAULT_SOCKET_READ_TIMEOUT_SEC = 30;
 
     namespace HeadersKeys {
         constexpr char CONTENT_ENCODING[] = "Content-Encoding";
@@ -100,6 +105,16 @@ namespace cpp_http {
     using Parameters = std::unordered_map<std::string, std::string>;
     using RawBuffer = std::vector<uint8_t>;
 
+    struct ClientSettings {
+#ifdef CPP_HTTP_REQUEST_SUPPORT_SSL
+        bool is_ssl_supported = true;
+        bool is_ssl_inited = false;
+#else
+        bool is_ssl_supported = false;
+        bool is_ssl_inited = false;
+#endif // CPP_HTTP_REQUEST_SUPPORT_SSL
+    };
+
     struct Request final {
         std::string scheme;
         std::string domain;
@@ -108,6 +123,10 @@ namespace cpp_http {
     };
 
     struct Response final {
+        operator bool( ) const {
+            return _status == StatusCode::OK;
+        }
+
         std::string _version;
         StatusCode _status = StatusCode::UNKNOWN;
         Headers _headers;
@@ -115,6 +134,7 @@ namespace cpp_http {
     };
 
     constexpr char DEFAULT_HTTP_PORT[] = "80";
+    constexpr char DEFAULT_HTTPS_PORT[] = "443";
 
     using ResponseHandler = std::function<void( const Response &res )>;
 
@@ -197,13 +217,13 @@ namespace cpp_http {
                 port = domain.substr( port_pos + 1 );
                 domain.resize( port_pos );
             } else {
-                port = DEFAULT_HTTP_PORT;
+                port = scheme == "https" ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
             }
 
             return {scheme, domain, path, port};
         }
 
-        auto make_body( const Parameters &parameters ) {
+        auto make_parameters_list( const Parameters &parameters ) {
             std::string body;
             auto first = true;
 
@@ -218,7 +238,7 @@ namespace cpp_http {
             return body;
         }
 
-        auto read_with_timeout( const int sock, const time_t sec, const time_t usec ) noexcept {
+        auto select_with_timeout( const int sock, const time_t sec, const time_t usec ) noexcept {
             fd_set fds;
             FD_ZERO( &fds );
             FD_SET( sock, &fds );
@@ -230,15 +250,168 @@ namespace cpp_http {
             return select( static_cast<int>( sock + 1 ), &fds, nullptr, nullptr, &tv );
         }
 
-        auto is_readable( const int sock ) noexcept -> bool {
-            return read_with_timeout( sock, DEFAULT_SOCKET_READ_TIMEOUT_SEC, 0 ) > 0;
+        inline auto set_nonblocking( const int sock, const bool nonblocking ) {
+            const auto flags = fcntl( sock, F_GETFL, 0 );
+            fcntl( sock, F_SETFL, nonblocking ? ( flags | O_NONBLOCK ) : ( flags & ( ~O_NONBLOCK ) ) );
         }
 
-        struct SocketStream {
-            SocketStream( ) = default;
+        struct SocketInterface {
+            using socket_type = int;
+            static constexpr socket_type INVALID = -1;
 
-            SocketStream( const int fd, const size_t initial_reserved_size ) : _fd{fd}, _position{0} {
+            virtual ~SocketInterface( ) = default;
+            virtual auto is_valid( ) const noexcept -> bool = 0;
+            virtual auto is_readable( ) const noexcept -> bool = 0;
+            virtual auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool = 0;
+            virtual auto close_connection( ) noexcept -> bool = 0;
+            virtual auto read( void *buf, const size_t n ) noexcept -> ssize_t = 0;
+            virtual auto write( const void *buf, const size_t n ) noexcept -> ssize_t = 0;
+        };
+
+        struct Socket final : SocketInterface {
+            using socket_type = SocketInterface::socket_type;
+            static constexpr socket_type INVALID = SocketInterface::INVALID;
+            static constexpr int DEFAULT_RW_FLAGS = MSG_NOSIGNAL;
+
+            Socket( ) = default;
+
+            auto is_valid( ) const noexcept -> bool override {
+                return _fd != INVALID;
+            }
+
+            auto is_readable( ) const noexcept -> bool override {
+                return select_with_timeout( _fd, DEFAULT_SOCKET_READ_TIMEOUT_SEC, 0 ) > 0;
+            }
+
+            auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
+                addrinfo hints = {};
+                hints.ai_family = AF_INET;
+                hints.ai_socktype = SOCK_STREAM;
+
+                addrinfo *info;
+                if ( getaddrinfo( domain.data( ), port.data( ), &hints, &info ) != 0 ) {
+                    // "Failed to get address info of " + domain
+                    return false;
+                }
+
+                const auto sock = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
+                if ( sock == -1 ) {
+                    // "Socket creation failed"
+                    return false;
+                }
+
+                if ( connect( sock, info->ai_addr, static_cast<socklen_t>( info->ai_addrlen ) ) < 0 ) {
+                    close( sock );
+                    return false;
+                }
+
+                _fd = sock;
+
+                detail::set_nonblocking( _fd, true );
+
+                return true;
+            }
+
+            auto close_connection( ) noexcept -> bool override {
+                return close( _fd ) == 0;
+            }
+
+            auto read( void *buf, const size_t n ) noexcept -> ssize_t {
+                return recv( _fd, buf, n, DEFAULT_RW_FLAGS );
+            }
+
+            auto write( const void *buf, const size_t n ) noexcept -> ssize_t {
+                return send( _fd, buf, n, DEFAULT_RW_FLAGS );
+            }
+
+            socket_type _fd;
+        };
+
+        struct SSLSocket final : SocketInterface {
+            using socket_type = Socket::socket_type;
+            static constexpr socket_type INVALID = SocketInterface::INVALID;
+
+            SSLSocket( ) = default;
+
+            auto is_valid( ) const noexcept -> bool override {
+                return _fd != INVALID;
+            }
+
+            auto is_readable( ) const noexcept -> bool override {
+                return select_with_timeout( _fd, DEFAULT_SOCKET_READ_TIMEOUT_SEC, 0 ) > 0;
+            }
+
+            auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
+                addrinfo hints = {};
+                hints.ai_family = AF_INET;
+                hints.ai_socktype = SOCK_STREAM;
+
+                addrinfo *info;
+                if ( getaddrinfo( domain.data( ), port.data( ), &hints, &info ) != 0 ) {
+                    // "Failed to get address info of " + domain
+                    return false;
+                }
+
+                const auto sock = socket( AF_INET, SOCK_STREAM, 0 );
+                if ( sock == -1 ) {
+                    // "Socket creation failed"
+                    return false;
+                }
+
+                if ( connect( sock, info->ai_addr, static_cast<socklen_t>( info->ai_addrlen ) ) < 0 ) {
+                    close( sock );
+                    return false;
+                }
+
+                _ctx = SSL_CTX_new( TLSv1_2_client_method( ) );
+                _ssl = SSL_new( _ctx );
+
+                SSL_set_fd( _ssl, sock );
+
+                if ( SSL_connect( _ssl ) < 0 ) {
+                    return false;
+                }
+
+                detail::set_nonblocking( sock, true );
+
+                _fd = SSL_get_fd( _ssl );
+
+                return true;
+            }
+
+            auto close_connection( ) noexcept -> bool override {
+                SSL_free( _ssl );
+                const auto ret = close( _fd ) == 0;
+                SSL_CTX_free( _ctx );
+
+                return ret;
+            }
+
+            auto read( void *buf, const size_t n ) noexcept -> ssize_t override {
+                return SSL_read( _ssl, buf, static_cast<int>( n ) );
+            }
+
+            auto write( const void *buf, const size_t n ) noexcept -> ssize_t override {
+                return SSL_write( _ssl, buf, static_cast<int>( n ) );
+            }
+
+            SSL_CTX *_ctx;
+            SSL *_ssl;
+            socket_type _fd;
+        };
+
+        struct SocketStream {
+            SocketStream( ) = delete;
+
+            SocketStream( SocketInterface &si, const std::string_view domain, const std::string_view port,
+                          const size_t initial_reserved_size )
+                : _si{si}, _position{0} {
                 _buffer.reserve( initial_reserved_size );
+                _si.open_connection( domain, port );
+            }
+
+            ~SocketStream( ) {
+                _si.close_connection( );
             }
 
             void append( std::string_view s ) {
@@ -254,9 +427,35 @@ namespace cpp_http {
                 return _buffer.size( ) == _position;
             }
 
+            auto is_writable( ) const noexcept {
+                return _si.is_valid( );
+            }
+
+            auto is_readable( ) const noexcept {
+                return _si.is_valid( ) && _si.is_readable( );
+            }
+
+            auto write( std::string_view sv ) {
+                auto remaining = sv.size( );
+                ssize_t sent = 0;
+
+                while ( remaining > 0 ) {
+                    const auto size = _si.write( sv.data( ) + sent, static_cast<size_t>( remaining ) );
+
+                    if ( size < 0 ) {
+                        // "Failed to send data to " + domain + ":" + port
+                        break;
+                    }
+
+                    remaining -= size;
+                    sent += size;
+                }
+
+                return sent == sv.size( );
+            }
+
             auto read( char *buf, const size_t sz, ssize_t &readed_bytes ) {
-                constexpr int flags = MSG_NOSIGNAL;
-                const auto size = recv( _fd, buf, sz, flags );
+                const auto size = _si.read( buf, sz );
                 readed_bytes = size;
 
                 if ( size < 0 ) {
@@ -309,10 +508,6 @@ namespace cpp_http {
                 return {};
             }
 
-            auto is_readable( ) const {
-                return detail::is_readable( _fd );
-            }
-
             auto get_line( ) {
                 if ( _buffer.empty( ) )
                     return std::string{};
@@ -337,7 +532,7 @@ namespace cpp_http {
                 return false;
             }
 
-            int _fd = 0;
+            SocketInterface &_si;
             size_t _position = 0;
             RawBuffer _buffer;
         };
@@ -422,9 +617,9 @@ namespace cpp_http {
                 res._body.insert( std::end( res._body ), std::begin( buf.value( ) ), std::end( buf.value( ) ) );
 
                 total += buf.value( ).size( );
-                bs._position +=  buf.value( ).size( );
+                bs._position += buf.value( ).size( );
 
-                if ( total >= lenght )
+                if ( static_cast<uint64_t>( total ) >= lenght )
                     break;
             }
 
@@ -450,7 +645,7 @@ namespace cpp_http {
             while ( true ) {
                 auto buf = bs.buffered_read( DEFAULT_READ_BUFFER_SIZE );
 
-                if ( !buf || buf.value().empty() )
+                if ( !buf || buf.value( ).empty( ) )
                     break;
 
                 auto line = bs.get_line( );
@@ -459,7 +654,7 @@ namespace cpp_http {
 
                 chunk_len = std::stoi( line, 0, 16 );
 
-                if (chunk_len <= 0)
+                if ( chunk_len <= 0 )
                     break;
 
                 if ( !read_content_with_lenght( bs, chunk_len, res ) )
@@ -488,24 +683,38 @@ namespace cpp_http {
             return ret;
         }
 
-        auto set_nonblocking( const int sock, const bool nonblocking ) {
-            const auto flags = fcntl( sock, F_GETFL, 0 );
-            fcntl( sock, F_SETFL, nonblocking ? ( flags | O_NONBLOCK ) : ( flags & ( ~O_NONBLOCK ) ) );
+        auto make_opt_socket( const bool is_https ) -> std::unique_ptr<SocketInterface> {
+            if ( is_https )
+                return std::make_unique<detail::SSLSocket>( );
+
+            return std::make_unique<detail::Socket>( );
         }
 
     } // namespace detail
 
-    // template <typename HttpMethod>
-    auto make_request( const std::string_view url, const std::string_view method, const Parameters &parameters, const Headers &headers,
-                       ResponseHandler handler ) {
+    static inline ClientSettings default_settings;
+
+    auto make_request( ClientSettings &settings, const std::string_view url, const std::string_view method, const Parameters &parameters,
+                       const Headers &headers, ResponseHandler handler ) {
         Request req;
         Response res;
 
         const auto [scheme, domain, path, port] = detail::split_url( url );
-        if ( scheme != "http" ) {
+        const auto is_https_request = settings.is_ssl_supported && scheme == "https";
+        if ( !( scheme == "http" || is_https_request ) ) {
             // "Unsupported scheme: " + scheme
             handler( res );
             return;
+        }
+
+        if ( is_https_request && !settings.is_ssl_inited ) {
+#ifdef CPP_HTTP_REQUEST_SUPPORT_SSL
+            SSL_library_init( );
+            SSL_load_error_strings( );
+            OpenSSL_add_all_algorithms( );
+
+            settings.is_ssl_inited = true;
+#endif // CPP_HTTP_REQUEST_SUPPORT_SSL
         }
 
         req.scheme = scheme;
@@ -513,90 +722,63 @@ namespace cpp_http {
         req.path = path;
         req.port = port;
 
-        addrinfo hints = {};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
+        auto sock = detail::make_opt_socket( is_https_request );
 
-        addrinfo *info;
-        if ( getaddrinfo( domain.c_str( ), port.c_str( ), &hints, &info ) != 0 ) {
-            // "Failed to get address info of " + domain
-            handler( res );
-            return;
-        }
-
-        const auto sock = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
-
-        if (::connect( sock, info->ai_addr, static_cast<socklen_t>( info->ai_addrlen ) ) < 0 ) {
-            close( sock );
-            handler( res );
-            return;
-        }
-
-        detail::set_nonblocking( sock, true );
+        detail::SocketStream sockstream{*sock.get( ), domain, port, DEFAULT_READ_BUFFER_SIZE};
 
         const auto is_get_method = method == "GET";
         const auto is_post_method = method == "POST";
 
         // Prepare request data
-        const auto body = detail::make_body( parameters );
+        const auto body = detail::make_parameters_list( parameters );
 
         std::string request_data = std::string{method} + " " + path;
-        if (is_get_method)
-            request_data +="?" + body;
-        request_data +=" HTTP/1.1\r\n";
+        if ( is_get_method )
+            request_data += "?" + body;
+        request_data += " HTTP/1.1\r\n";
 
         request_data += "Host: " + domain + "\r\n";
 
-        if (is_post_method)
+        if ( is_post_method )
             request_data += "Content-Length: " + std::to_string( body.size( ) ) + "\r\n";
 
         for ( const auto &[k, v] : headers )
             request_data += k + ": " + v + "\r\n";
 
         request_data += "\r\n";
-        if (is_post_method)
+        if ( is_post_method )
             request_data += body;
 
-        constexpr int flags = MSG_NOSIGNAL;
-
-        auto remaining = static_cast<ssize_t>( request_data.size( ) );
-        ssize_t sent = 0;
-
-        // Send request
-        while ( remaining > 0 ) {
-            const auto size = send( sock, request_data.data( ) + sent, static_cast<size_t>( remaining ), flags );
-
-            if ( size < 0 ) {
-                // "Failed to send data to " + domain + ":" + port
-                break;
-            }
-
-            remaining -= size;
-            sent += size;
+        if ( !sockstream.is_writable( ) ) {
+            handler( res );
+            return;
         }
 
-        detail::SocketStream response_data{sock, DEFAULT_READ_BUFFER_SIZE};
+        sockstream.write( request_data );
 
         // Read response
-        while ( response_data.is_readable( ) ) {
-            auto buf = response_data.buffered_read( DEFAULT_READ_BUFFER_SIZE );
+        while ( sockstream.is_readable( ) ) {
+            auto buf = sockstream.buffered_read( DEFAULT_READ_BUFFER_SIZE );
             if ( !buf ) {
                 break;
             }
 
-            auto line = response_data.get_line( );
+            auto line = sockstream.get_line( );
 
-            if ( !detail::read_response_line( line, res ) || !detail::read_headers( response_data, res._headers ) ) {
+            if ( !detail::read_response_line( line, res ) || !detail::read_headers( sockstream, res._headers ) ) {
                 break;
             }
 
-            if ( detail::read_conetent( response_data, res ) )
+            if ( detail::read_conetent( sockstream, res ) )
                 break;
         }
 
-        close( sock );
-
         handler( res );
+    }
+
+    inline auto make_request( const std::string_view url, const std::string_view method, const Parameters &parameters,
+                              const Headers &headers, ResponseHandler handler ) {
+        return make_request( default_settings, url, method, parameters, headers, handler );
     }
 
 } // namespace cpp_http

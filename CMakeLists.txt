@@ -9,7 +9,9 @@ set(APP_NAME cpp_http_request_tests)
 set(LIB_NAME cpp_http_request)
 set(SHARED_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+find_package(OpenSSL)
 add_library(${LIB_NAME} INTERFACE)
+
 target_include_directories(${LIB_NAME} INTERFACE include/)
 
 FetchContent_Declare(
@@ -42,6 +44,10 @@ set(SOURCES
     )
 add_executable(${APP_NAME} ${SOURCES} ${HEADERS})
 
+if(OPENSSL_FOUND)
+    target_compile_definitions(${APP_NAME} PUBLIC CPP_HTTP_REQUEST_SUPPORT_SSL)
+endif()
+
 target_include_directories(${APP_NAME} PUBLIC
     ${SHARED_INCLUDE_DIR}
     ${EXTERNAL_INCLUDE_DIR}
@@ -64,4 +70,9 @@ target_compile_options(${APP_NAME} PUBLIC
 
 add_test(UnitTests ${APP_NAME})
 
-target_link_libraries(${APP_NAME} PUBLIC ${LIB_NAME} gtest gmock gtest_main)
+target_link_libraries(${APP_NAME} PUBLIC
+    ${LIB_NAME}
+    gtest
+    gmock
+    gtest_main
+    OpenSSL::SSL)

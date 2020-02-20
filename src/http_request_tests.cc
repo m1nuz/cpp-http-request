@@ -31,6 +31,7 @@ TEST( HttpRequest_GET, Get_HttpBin ) {
     constexpr char RequestURI[] = "http://httpbin.org/get";
 
     cpp_http::make_request( RequestURI, "GET", {}, {}, [=]( const cpp_http::Response &res ) {
+        EXPECT_TRUE( res );
         EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
         EXPECT_EQ( res._version, "HTTP/1.1" );
 
@@ -117,6 +118,17 @@ TEST( HttpRequest_GET, Get_Postman ) {
     } );
 }
 
+TEST( HttpsRequest_GET, Get_Postman ) {
+    constexpr char RequestURI[] = "https://postman-echo.com/get";
+
+    cpp_http::make_request( RequestURI, "GET", {}, {}, [=]( const cpp_http::Response &res ) {
+        EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
+        EXPECT_EQ( res._version, "HTTP/1.1" );
+
+        print( res );
+    } );
+}
+
 TEST( HttpRequest_GET, GetStream_Postman ) {
     constexpr char RequestURI[] = "http://postman-echo.com/stream/5";
 
@@ -165,4 +177,3 @@ TEST( HttpRequest_POST, PostForm_HttpBin ) {
         print( res );
     } );
 }
-
