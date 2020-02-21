@@ -10,7 +10,7 @@ using json = nlohmann::json;
 #define ENABLE_OUTPUT
 
 #ifdef ENABLE_OUTPUT
-void print( const cpp_http::Response &res ) {
+static void print( const cpp_http::Response &res ) {
     std::cout << res._version << " " << static_cast<int>(res._status) << '\n';
 
     for ( auto &[k, v] : res._headers ) {
@@ -118,12 +118,26 @@ TEST( HttpRequest_GET, Get_Postman ) {
     } );
 }
 
-TEST( HttpsRequest_GET, Get_Postman ) {
-    constexpr char RequestURI[] = "https://postman-echo.com/get";
+TEST( HttpRequest_GET, GetWithParams_Postman ) {
+    constexpr char RequestURI[] = "http://postman-echo.com/get";
 
-    cpp_http::make_request( RequestURI, "GET", {}, {}, [=]( const cpp_http::Response &res ) {
+    const auto in_args = std::unordered_map<std::string, std::string>{{"foo", "1"}, {"bar", "2"}};
+
+    cpp_http::make_request( RequestURI, "GET", in_args, {}, [=]( const cpp_http::Response &res ) {
         EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
         EXPECT_EQ( res._version, "HTTP/1.1" );
+
+        if (auto it = res._headers.find( "Content-Length" ); it != res._headers.end() ) {
+            const auto size = std::stoi( it->second );
+            EXPECT_GE( res._body.size(), size);
+        }
+
+        auto j = json::parse( res._body.begin(), res._body.end() );
+        if (j.find("args") != j.end()) {
+            auto args = j["args"].get<std::unordered_map<std::string, std::string>>();
+
+            EXPECT_EQ( in_args, args );
+        }
 
         print( res );
     } );
@@ -177,3 +191,15 @@ TEST( HttpRequest_POST, PostForm_HttpBin ) {
         print( res );
     } );
 }
+
+TEST( HttpRequest_GET, Get_ipify_ipv6 ) {
+    constexpr char RequestURI[] = "http://api6.ipify.org";
+
+    cpp_http::make_request( RequestURI, "GET", {}, {}, [=]( const cpp_http::Response &res ) {
+        EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
+        EXPECT_EQ( res._version, "HTTP/1.1" );
+
+        print( res );
+    } );
+}
+

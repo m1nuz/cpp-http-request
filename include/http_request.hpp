@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -187,7 +188,7 @@ namespace cpp_http {
             return result;
         }
 
-        auto split_url( const std::string_view url ) noexcept -> std::tuple<std::string, std::string, std::string, std::string> {
+        inline auto split_url( const std::string_view url ) noexcept -> std::tuple<std::string, std::string, std::string, std::string> {
             std::string scheme, domain, path, port;
 
             const auto scheme_end_pos = url.find( "://" );
@@ -223,7 +224,7 @@ namespace cpp_http {
             return {scheme, domain, path, port};
         }
 
-        auto make_parameters_list( const Parameters &parameters ) {
+        inline auto make_parameters_list( const Parameters &parameters ) {
             std::string body;
             auto first = true;
 
@@ -238,7 +239,7 @@ namespace cpp_http {
             return body;
         }
 
-        auto select_with_timeout( const int sock, const time_t sec, const time_t usec ) noexcept {
+        inline auto select_with_timeout( const int sock, const time_t sec, const time_t usec ) noexcept {
             fd_set fds;
             FD_ZERO( &fds );
             FD_SET( sock, &fds );
@@ -268,6 +269,14 @@ namespace cpp_http {
             virtual auto write( const void *buf, const size_t n ) noexcept -> ssize_t = 0;
         };
 
+        inline auto get_in_addr( struct sockaddr *sa ) noexcept -> void * {
+            if ( sa->sa_family == AF_INET ) {
+                return &( ( (struct sockaddr_in *)sa )->sin_addr );
+            }
+
+            return &( ( (struct sockaddr_in6 *)sa )->sin6_addr );
+        }
+
         struct Socket final : SocketInterface {
             using socket_type = SocketInterface::socket_type;
             static constexpr socket_type INVALID = SocketInterface::INVALID;
@@ -285,27 +294,42 @@ namespace cpp_http {
 
             auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
                 addrinfo hints = {};
-                hints.ai_family = AF_INET;
+                hints.ai_family = AF_UNSPEC;
                 hints.ai_socktype = SOCK_STREAM;
 
-                addrinfo *info;
+                addrinfo *info, *p;
                 if ( getaddrinfo( domain.data( ), port.data( ), &hints, &info ) != 0 ) {
                     // "Failed to get address info of " + domain
                     return false;
                 }
 
-                const auto sock = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
-                if ( sock == -1 ) {
-                    // "Socket creation failed"
+                socket_type sock = INVALID;
+                for ( p = info; p != nullptr; p = p->ai_next ) {
+                    if ( sock = socket( p->ai_family, p->ai_socktype, p->ai_protocol ); sock == INVALID ) {
+                        // Error socket creation
+                        continue;
+                    }
+
+                    if ( connect( sock, p->ai_addr, p->ai_addrlen ) < 0 ) {
+                        close( sock );
+                        // Error connect
+                        continue;
+                    }
+
+                    break;
+                }
+
+                if ( p == nullptr ) {
+                    // Failed to connect any address
                     return false;
                 }
 
-                if ( connect( sock, info->ai_addr, static_cast<socklen_t>( info->ai_addrlen ) ) < 0 ) {
-                    close( sock );
-                    return false;
-                }
+                char s[INET6_ADDRSTRLEN];
+                inet_ntop( p->ai_family, get_in_addr( (struct sockaddr *)p->ai_addr ), s, sizeof s );
 
                 _fd = sock;
+
+                freeaddrinfo( info );
 
                 detail::set_nonblocking( _fd, true );
 
@@ -343,23 +367,35 @@ namespace cpp_http {
 
             auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
                 addrinfo hints = {};
-                hints.ai_family = AF_INET;
+                hints.ai_family = AF_UNSPEC;
                 hints.ai_socktype = SOCK_STREAM;
 
-                addrinfo *info;
-                if ( getaddrinfo( domain.data( ), port.data( ), &hints, &info ) != 0 ) {
+                addrinfo *info, *p;
+                if ( int status = getaddrinfo( domain.data( ), port.data( ), &hints, &info ); status != 0 ) {
                     // "Failed to get address info of " + domain
+                    auto* err = gai_strerror(status);
+                    fprintf(stderr, "getaddrinfo: %s\n", err);
                     return false;
                 }
 
-                const auto sock = socket( AF_INET, SOCK_STREAM, 0 );
-                if ( sock == -1 ) {
-                    // "Socket creation failed"
-                    return false;
+                socket_type sock = INVALID;
+                for ( p = info; p != nullptr; p = p->ai_next ) {
+                    if ( sock = socket( p->ai_family, p->ai_socktype, p->ai_protocol ); sock == INVALID ) {
+                        // Error socket creation
+                        continue;
+                    }
+
+                    if ( connect( sock, p->ai_addr, p->ai_addrlen ) < 0 ) {
+                        close( sock );
+                        // Error connect
+                        continue;
+                    }
+
+                    break;
                 }
 
-                if ( connect( sock, info->ai_addr, static_cast<socklen_t>( info->ai_addrlen ) ) < 0 ) {
-                    close( sock );
+                if ( p == nullptr ) {
+                    // Failed to connect any address
                     return false;
                 }
 
@@ -537,7 +573,7 @@ namespace cpp_http {
             RawBuffer _buffer;
         };
 
-        auto has_header( const Headers &headers, std::string_view key ) {
+        inline auto has_header( const Headers &headers, std::string_view key ) {
             return headers.find( key.data( ) ) != headers.end( );
         }
 
@@ -547,23 +583,28 @@ namespace cpp_http {
                 value = it->second;
             }
 
-            if constexpr ( std::is_same_v<T, std::string> ) {
-                if ( !value.empty( ) )
-                    return value;
-            } else
+            if
+                constexpr( std::is_same_v<T, std::string> ) {
+                    if ( !value.empty( ) )
+                        return value;
+                }
+            else
 
-                if constexpr ( std::is_unsigned_v<T> ) {
-                if ( !value.empty( ) )
-                    return static_cast<T>( std::stoul( value ) );
-            } else if constexpr ( std::is_signed_v<T> ) {
-                if ( !value.empty( ) )
-                    return static_cast<T>( std::stol( value ) );
-            }
+                if
+                constexpr( std::is_unsigned_v<T> ) {
+                    if ( !value.empty( ) )
+                        return static_cast<T>( std::stoul( value ) );
+                }
+            else if
+                constexpr( std::is_signed_v<T> ) {
+                    if ( !value.empty( ) )
+                        return static_cast<T>( std::stol( value ) );
+                }
 
             return {};
         }
 
-        auto is_chunked_transfer_encoding( const Headers &headers ) {
+        inline auto is_chunked_transfer_encoding( const Headers &headers ) {
             if ( auto val = get_header_value<std::string>( headers, HeadersKeys::TRANSFER_ENCODING ); val ) {
                 return val.value( ) == "chunked";
             }
@@ -571,7 +612,7 @@ namespace cpp_http {
             return false;
         }
 
-        auto read_response_line( std::string_view line, Response &res ) {
+        inline auto read_response_line( std::string_view line, Response &res ) {
             const static std::regex re( "(HTTP/1\\.[01]) (\\d+?) .*\r\n" );
 
             std::cmatch m;
@@ -585,7 +626,7 @@ namespace cpp_http {
             return false;
         }
 
-        auto read_headers( SocketStream &bs, Headers &headers ) {
+        inline auto read_headers( SocketStream &bs, Headers &headers ) {
             while ( true ) {
                 if ( bs.is_crlf( ) && !bs.is_empty( ) )
                     break;
@@ -606,7 +647,7 @@ namespace cpp_http {
             return true;
         }
 
-        auto read_content_with_lenght( SocketStream &bs, const uint64_t lenght, Response &res ) {
+        inline auto read_content_with_lenght( SocketStream &bs, const uint64_t lenght, Response &res ) {
             ssize_t total = 0;
             while ( true ) {
 
@@ -626,7 +667,7 @@ namespace cpp_http {
             return total >= lenght;
         }
 
-        auto read_content_without_lenght( SocketStream &bs, Response &res ) {
+        inline auto read_content_without_lenght( SocketStream &bs, Response &res ) {
             while ( true ) {
                 auto buf = bs.buffered_read( DEFAULT_READ_BUFFER_SIZE );
                 if ( !buf )
@@ -636,7 +677,7 @@ namespace cpp_http {
             }
         }
 
-        auto read_content_chunked( SocketStream &bs, Response &res ) {
+        inline auto read_content_chunked( SocketStream &bs, Response &res ) {
             if ( bs.is_crlf( ) )
                 bs.skip( 2 ); // Skip /r/n
 
@@ -664,7 +705,7 @@ namespace cpp_http {
             return true;
         }
 
-        auto read_conetent( SocketStream &bs, Response &res ) {
+        inline auto read_conetent( SocketStream &bs, Response &res ) {
 
             if ( bs.is_crlf( ) )
                 bs.skip( 2 ); // Skip /r/n
@@ -683,7 +724,7 @@ namespace cpp_http {
             return ret;
         }
 
-        auto make_opt_socket( const bool is_https ) -> std::unique_ptr<SocketInterface> {
+        inline auto make_opt_socket( const bool is_https ) -> std::unique_ptr<SocketInterface> {
             if ( is_https )
                 return std::make_unique<detail::SSLSocket>( );
 
@@ -694,12 +735,12 @@ namespace cpp_http {
 
     static inline ClientSettings default_settings;
 
-    auto make_request( ClientSettings &settings, const std::string_view url, const std::string_view method, const Parameters &parameters,
+    static inline auto make_request( ClientSettings &settings, const std::string_view url, const std::string_view method, const Parameters &parameters,
                        const Headers &headers, ResponseHandler handler ) {
         Request req;
         Response res;
 
-        const auto [scheme, domain, path, port] = detail::split_url( url );
+        const auto[scheme, domain, path, port] = detail::split_url( url );
         const auto is_https_request = settings.is_ssl_supported && scheme == "https";
         if ( !( scheme == "http" || is_https_request ) ) {
             // "Unsupported scheme: " + scheme
@@ -742,7 +783,7 @@ namespace cpp_http {
         if ( is_post_method )
             request_data += "Content-Length: " + std::to_string( body.size( ) ) + "\r\n";
 
-        for ( const auto &[k, v] : headers )
+        for ( const auto & [ k, v ] : headers )
             request_data += k + ": " + v + "\r\n";
 
         request_data += "\r\n";
@@ -776,7 +817,7 @@ namespace cpp_http {
         handler( res );
     }
 
-    inline auto make_request( const std::string_view url, const std::string_view method, const Parameters &parameters,
+    static inline auto make_request( const std::string_view url, const std::string_view method, const Parameters &parameters,
                               const Headers &headers, ResponseHandler handler ) {
         return make_request( default_settings, url, method, parameters, headers, handler );
     }

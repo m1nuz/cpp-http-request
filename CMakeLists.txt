@@ -41,6 +41,7 @@ enable_testing()
 
 set(SOURCES
     src/http_request_tests.cc
+    src/https_request_tests.cc
     )
 add_executable(${APP_NAME} ${SOURCES} ${HEADERS})
 
