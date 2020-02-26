@@ -93,6 +93,7 @@ namespace cpp_http {
         NETWORKAUTHENTICATIONREQUIRED = 511
     };
 
+    constexpr size_t DEFAULT_REQUEST_SIZE = 1024;
     constexpr size_t DEFAULT_READ_BUFFER_SIZE = 4096;
     constexpr time_t DEFAULT_SOCKET_READ_TIMEOUT_SEC = 30;
 
@@ -373,8 +374,8 @@ namespace cpp_http {
                 addrinfo *info, *p;
                 if ( int status = getaddrinfo( domain.data( ), port.data( ), &hints, &info ); status != 0 ) {
                     // "Failed to get address info of " + domain
-                    auto* err = gai_strerror(status);
-                    fprintf(stderr, "getaddrinfo: %s\n", err);
+                    auto *err = gai_strerror( status );
+                    fprintf( stderr, "getaddrinfo: %s\n", err );
                     return false;
                 }
 
@@ -399,7 +400,7 @@ namespace cpp_http {
                     return false;
                 }
 
-                _ctx = SSL_CTX_new( TLSv1_2_client_method( ) );
+                _ctx = SSL_CTX_new( SSLv23_client_method( ) );
                 _ssl = SSL_new( _ctx );
 
                 SSL_set_fd( _ssl, sock );
@@ -487,7 +488,7 @@ namespace cpp_http {
                     sent += size;
                 }
 
-                return sent == sv.size( );
+                return static_cast<size_t>( sent ) == sv.size( );
             }
 
             auto read( char *buf, const size_t sz, ssize_t &readed_bytes ) {
@@ -583,23 +584,18 @@ namespace cpp_http {
                 value = it->second;
             }
 
-            if
-                constexpr( std::is_same_v<T, std::string> ) {
-                    if ( !value.empty( ) )
-                        return value;
-                }
-            else
+            if constexpr ( std::is_same_v<T, std::string> ) {
+                if ( !value.empty( ) )
+                    return value;
+            } else
 
-                if
-                constexpr( std::is_unsigned_v<T> ) {
-                    if ( !value.empty( ) )
-                        return static_cast<T>( std::stoul( value ) );
-                }
-            else if
-                constexpr( std::is_signed_v<T> ) {
-                    if ( !value.empty( ) )
-                        return static_cast<T>( std::stol( value ) );
-                }
+                if constexpr ( std::is_unsigned_v<T> ) {
+                if ( !value.empty( ) )
+                    return static_cast<T>( std::stoul( value ) );
+            } else if constexpr ( std::is_signed_v<T> ) {
+                if ( !value.empty( ) )
+                    return static_cast<T>( std::stol( value ) );
+            }
 
             return {};
         }
@@ -664,7 +660,7 @@ namespace cpp_http {
                     break;
             }
 
-            return total >= lenght;
+            return static_cast<size_t>( total ) >= lenght;
         }
 
         inline auto read_content_without_lenght( SocketStream &bs, Response &res ) {
@@ -735,12 +731,12 @@ namespace cpp_http {
 
     static inline ClientSettings default_settings;
 
-    static inline auto make_request( ClientSettings &settings, const std::string_view url, const std::string_view method, const Parameters &parameters,
-                       const Headers &headers, ResponseHandler handler ) {
+    static inline auto make_request( ClientSettings &settings, const std::string_view url, const std::string_view method,
+                                     const Headers &headers, const std::string_view body, ResponseHandler handler ) {
         Request req;
         Response res;
 
-        const auto[scheme, domain, path, port] = detail::split_url( url );
+        const auto [scheme, domain, path, port] = detail::split_url( url );
         const auto is_https_request = settings.is_ssl_supported && scheme == "https";
         if ( !( scheme == "http" || is_https_request ) ) {
             // "Unsupported scheme: " + scheme
@@ -770,12 +766,14 @@ namespace cpp_http {
         const auto is_get_method = method == "GET";
         const auto is_post_method = method == "POST";
 
-        // Prepare request data
-        const auto body = detail::make_parameters_list( parameters );
-
-        std::string request_data = std::string{method} + " " + path;
-        if ( is_get_method )
-            request_data += "?" + body;
+        std::string request_data;
+        request_data.reserve( DEFAULT_REQUEST_SIZE );
+        request_data.append( method.begin( ), method.end( ) );
+        request_data += " " + path;
+        if ( is_get_method ) {
+            request_data += "?";
+            request_data.append( body.begin( ), body.end( ) );
+        }
         request_data += " HTTP/1.1\r\n";
 
         request_data += "Host: " + domain + "\r\n";
@@ -783,7 +781,7 @@ namespace cpp_http {
         if ( is_post_method )
             request_data += "Content-Length: " + std::to_string( body.size( ) ) + "\r\n";
 
-        for ( const auto & [ k, v ] : headers )
+        for ( const auto &[k, v] : headers )
             request_data += k + ": " + v + "\r\n";
 
         request_data += "\r\n";
@@ -818,8 +816,24 @@ namespace cpp_http {
     }
 
     static inline auto make_request( const std::string_view url, const std::string_view method, const Parameters &parameters,
-                              const Headers &headers, ResponseHandler handler ) {
-        return make_request( default_settings, url, method, parameters, headers, handler );
+                                     const Headers &headers, ResponseHandler handler ) {
+        // Prepare request data
+        const auto body = detail::make_parameters_list( parameters );
+
+        return make_request( default_settings, url, method, headers, body, handler );
+    }
+
+    static inline auto make_get_request( const std::string_view url, const Headers &headers, const Parameters &parameters,
+                                         ResponseHandler handler ) {
+        // Prepare request data
+        const auto body = detail::make_parameters_list( parameters );
+
+        return make_request( default_settings, url, "GET", headers, body, handler );
+    }
+
+    static inline auto make_post_request( const std::string_view url, const Headers &headers, std::string_view body,
+                                          ResponseHandler handler ) {
+        return make_request( default_settings, url, "POST", headers, body, handler );
     }
 
 } // namespace cpp_http

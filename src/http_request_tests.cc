@@ -170,7 +170,7 @@ TEST( HttpRequest_POST, Post_HttpBin ) {
 }
 
 
-TEST( HttpRequest_POST, PostForm_HttpBin ) {
+TEST( HttpRequest_POST, PostWWWFormUrlEncoded_HttpBin ) {
     constexpr char RequestURI[] = "http://httpbin.org/post";
     const auto in_args = std::unordered_map<std::string, std::string>{{"foo", "1"}, {"bar", "2"}};
 
@@ -190,6 +190,25 @@ TEST( HttpRequest_POST, PostForm_HttpBin ) {
 
         print( res );
     } );
+}
+
+TEST( HttpRequest_POST, PostJson_Postman ) {
+    constexpr char RequestURI[] = "http://postman-echo.com/post";
+
+    const auto in_args = std::unordered_map<std::string, std::string>{{"username", "xyz"}, {"password", "xyz"}};
+    json test_json = in_args;
+
+    cpp_http::make_post_request(RequestURI, {{"Content-Type", "application/json"}}, test_json.dump( ), [=]( const cpp_http::Response &res ) {
+        EXPECT_EQ( res._status, cpp_http::StatusCode::OK );
+        EXPECT_EQ( res._version, "HTTP/1.1" );
+
+        auto j = json::parse( res._body.begin(), res._body.end() );
+        EXPECT_NE(j.find("data"), j.end());
+        auto args = j["data"].get<std::unordered_map<std::string, std::string>>();
+        EXPECT_EQ( in_args, args );
+
+        print( res );
+    });
 }
 
 TEST( HttpRequest_GET, Get_ipify_ipv6 ) {
