@@ -145,6 +145,7 @@ namespace cpp_http {
             constexpr char hex_chars[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 
             std::string result;
+            result.reserve( str.size( ) );
 
             for ( auto i = str.begin( ); i != str.end( ); ++i ) {
                 const uint8_t cp = *i & 0xFF;
@@ -154,35 +155,52 @@ namespace cpp_http {
                      ( cp >= 0x61 && cp <= 0x7A ) ||          // a-z
                      cp == 0x2D || cp == 0x2E || cp == 0x5F ) // - . _
                     result += static_cast<char>( cp );
-                else if ( cp <= 0x7F ) // length = 1
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
-                else if ( ( cp >> 5 ) == 0x06 ) // length = 2
-                {
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
+                else if ( cp <= 0x7F ) { // length = 1
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
+                } else if ( ( cp >> 5 ) == 0x06 ) { // length = 2
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
                     if ( ++i == str.end( ) )
                         break;
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
-                } else if ( ( cp >> 4 ) == 0x0E ) // length = 3
-                {
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
+                } else if ( ( cp >> 4 ) == 0x0E ) { // length = 3
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
                     if ( ++i == str.end( ) )
                         break;
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
                     if ( ++i == str.end( ) )
                         break;
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
-                } else if ( ( cp >> 3 ) == 0x1E ) // length = 4
-                {
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
+                } else if ( ( cp >> 3 ) == 0x1E ) { // length = 4
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
                     if ( ++i == str.end( ) )
                         break;
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
                     if ( ++i == str.end( ) )
                         break;
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
                     if ( ++i == str.end( ) )
                         break;
-                    result += std::string( "%" ) + hex_chars[( *i & 0xF0 ) >> 4] + hex_chars[*i & 0x0F];
+                    result += '%';
+                    result += hex_chars[( *i & 0xF0 ) >> 4];
+                    result += hex_chars[*i & 0x0F];
                 }
             }
 
