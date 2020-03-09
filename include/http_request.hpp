@@ -788,7 +788,7 @@ namespace cpp_http {
         request_data.reserve( DEFAULT_REQUEST_SIZE );
         request_data.append( method.begin( ), method.end( ) );
         request_data += " " + path;
-        if ( is_get_method ) {
+        if ( is_get_method && !body.empty() ) {
             request_data += "?";
             request_data.append( body.begin( ), body.end( ) );
         }
