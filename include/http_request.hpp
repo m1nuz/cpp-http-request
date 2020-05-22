@@ -115,6 +115,7 @@ namespace cpp_http {
         bool is_ssl_supported = false;
         bool is_ssl_inited = false;
 #endif // CPP_HTTP_REQUEST_SUPPORT_SSL
+        time_t socket_read_timeout = DEFAULT_SOCKET_READ_TIMEOUT_SEC;
     };
 
     struct Request final {
@@ -281,7 +282,7 @@ namespace cpp_http {
 
             virtual ~SocketInterface( ) = default;
             virtual auto is_valid( ) const noexcept -> bool = 0;
-            virtual auto is_readable( ) const noexcept -> bool = 0;
+            virtual auto is_readable( const time_t read_timeout ) const noexcept -> bool = 0;
             virtual auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool = 0;
             virtual auto close_connection( ) noexcept -> bool = 0;
             virtual auto read( void *buf, const size_t n ) noexcept -> ssize_t = 0;
@@ -290,10 +291,10 @@ namespace cpp_http {
 
         inline auto get_in_addr( struct sockaddr *sa ) noexcept -> void * {
             if ( sa->sa_family == AF_INET ) {
-                return &( ( (struct sockaddr_in *)sa )->sin_addr );
+                return &( ( reinterpret_cast<struct sockaddr_in *>( sa ) )->sin_addr );
             }
 
-            return &( ( (struct sockaddr_in6 *)sa )->sin6_addr );
+            return &( ( reinterpret_cast<struct sockaddr_in6 *>( sa ) )->sin6_addr );
         }
 
         struct Socket final : SocketInterface {
@@ -307,8 +308,8 @@ namespace cpp_http {
                 return _fd != INVALID;
             }
 
-            auto is_readable( ) const noexcept -> bool override {
-                return select_with_timeout( _fd, DEFAULT_SOCKET_READ_TIMEOUT_SEC, 0 ) > 0;
+            auto is_readable( const time_t read_timeout ) const noexcept -> bool override {
+                return select_with_timeout( _fd, read_timeout, 0 ) > 0;
             }
 
             auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
@@ -344,7 +345,7 @@ namespace cpp_http {
                 }
 
                 char s[INET6_ADDRSTRLEN];
-                inet_ntop( p->ai_family, get_in_addr( (struct sockaddr *)p->ai_addr ), s, sizeof s );
+                inet_ntop( p->ai_family, get_in_addr( reinterpret_cast<struct sockaddr *>( p->ai_addr ) ), s, sizeof s );
 
                 _fd = sock;
 
@@ -359,11 +360,11 @@ namespace cpp_http {
                 return close( _fd ) == 0;
             }
 
-            auto read( void *buf, const size_t n ) noexcept -> ssize_t {
+            auto read( void *buf, const size_t n ) noexcept -> ssize_t override {
                 return recv( _fd, buf, n, DEFAULT_RW_FLAGS );
             }
 
-            auto write( const void *buf, const size_t n ) noexcept -> ssize_t {
+            auto write( const void *buf, const size_t n ) noexcept -> ssize_t override {
                 return send( _fd, buf, n, DEFAULT_RW_FLAGS );
             }
 
@@ -380,8 +381,8 @@ namespace cpp_http {
                 return _fd != INVALID;
             }
 
-            auto is_readable( ) const noexcept -> bool override {
-                return select_with_timeout( _fd, DEFAULT_SOCKET_READ_TIMEOUT_SEC, 0 ) > 0;
+            auto is_readable( const time_t read_timeout ) const noexcept -> bool override {
+                return select_with_timeout( _fd, read_timeout, 0 ) > 0;
             }
 
             auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
@@ -486,8 +487,8 @@ namespace cpp_http {
                 return _si.is_valid( );
             }
 
-            auto is_readable( ) const noexcept {
-                return _si.is_valid( ) && _si.is_readable( );
+            auto is_readable( const time_t read_timeout ) const noexcept {
+                return _si.is_valid( ) && _si.is_readable( read_timeout );
             }
 
             auto write( std::string_view sv ) {
@@ -502,7 +503,7 @@ namespace cpp_http {
                         break;
                     }
 
-                    remaining -= size;
+                    remaining -= static_cast<size_t>( size );
                     sent += size;
                 }
 
@@ -603,8 +604,9 @@ namespace cpp_http {
             }
 
             if constexpr ( std::is_same_v<T, std::string> ) {
-                if ( !value.empty( ) )
-                    return value;
+                if ( !value.empty( ) ) {
+                    return {value};
+                }
             } else
 
                 if constexpr ( std::is_unsigned_v<T> ) {
@@ -707,12 +709,12 @@ namespace cpp_http {
                 if ( line.empty( ) )
                     continue;
 
-                chunk_len = std::stoi( line, 0, 16 );
+                chunk_len = std::stoi( line, nullptr, 16 );
 
                 if ( chunk_len <= 0 )
                     break;
 
-                if ( !read_content_with_lenght( bs, chunk_len, res ) )
+                if ( !read_content_with_lenght( bs, static_cast<uint64_t>( chunk_len ), res ) )
                     return false;
             }
 
@@ -720,7 +722,6 @@ namespace cpp_http {
         }
 
         inline auto read_conetent( SocketStream &bs, Response &res ) {
-
             if ( bs.is_crlf( ) )
                 bs.skip( 2 ); // Skip /r/n
 
@@ -788,7 +789,7 @@ namespace cpp_http {
         request_data.reserve( DEFAULT_REQUEST_SIZE );
         request_data.append( method.begin( ), method.end( ) );
         request_data += " " + path;
-        if ( is_get_method && !body.empty() ) {
+        if ( is_get_method && !body.empty( ) ) {
             request_data += "?";
             request_data.append( body.begin( ), body.end( ) );
         }
@@ -814,7 +815,7 @@ namespace cpp_http {
         sockstream.write( request_data );
 
         // Read response
-        while ( sockstream.is_readable( ) ) {
+        while ( sockstream.is_readable( settings.socket_read_timeout ) ) {
             auto buf = sockstream.buffered_read( DEFAULT_READ_BUFFER_SIZE );
             if ( !buf ) {
                 break;
@@ -833,24 +834,24 @@ namespace cpp_http {
         handler( res );
     }
 
-    static inline auto make_request( const std::string_view url, const std::string_view method, const Parameters &parameters,
-                                     const Headers &headers, ResponseHandler handler ) {
+    [[maybe_unused]] static inline auto make_request( const std::string_view url, const std::string_view method,
+                                                      const Parameters &parameters, const Headers &headers, ResponseHandler handler ) {
         // Prepare request data
         const auto body = detail::make_parameters_list( parameters );
 
         return make_request( default_settings, url, method, headers, body, handler );
     }
 
-    static inline auto make_get_request( const std::string_view url, const Headers &headers, const Parameters &parameters,
-                                         ResponseHandler handler ) {
+    [[maybe_unused]] static inline auto make_get_request( const std::string_view url, const Headers &headers, const Parameters &parameters,
+                                                          ResponseHandler handler ) {
         // Prepare request data
         const auto body = detail::make_parameters_list( parameters );
 
         return make_request( default_settings, url, "GET", headers, body, handler );
     }
 
-    static inline auto make_post_request( const std::string_view url, const Headers &headers, std::string_view body,
-                                          ResponseHandler handler ) {
+    [[maybe_unused]] static inline auto make_post_request( const std::string_view url, const Headers &headers, std::string_view body,
+                                                           ResponseHandler handler ) {
         return make_request( default_settings, url, "POST", headers, body, handler );
     }
 
