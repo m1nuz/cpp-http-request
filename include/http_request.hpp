@@ -5,6 +5,7 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -93,7 +94,7 @@ namespace cpp_http {
         NETWORKAUTHENTICATIONREQUIRED = 511
     };
 
-    constexpr size_t DEFAULT_REQUEST_SIZE = 1024;
+    constexpr size_t DEFAULT_WRITE_BUFFER_SIZE = 1024;
     constexpr size_t DEFAULT_READ_BUFFER_SIZE = 4096;
     constexpr time_t DEFAULT_SOCKET_READ_TIMEOUT_SEC = 30;
 
@@ -309,7 +310,8 @@ namespace cpp_http {
             }
 
             auto is_readable( const time_t read_timeout ) const noexcept -> bool override {
-                return select_with_timeout( _fd, read_timeout, 0 ) > 0;
+                const auto rc = select_with_timeout( _fd, read_timeout, 0 );
+                return rc > 0;
             }
 
             auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
@@ -368,7 +370,7 @@ namespace cpp_http {
                 return send( _fd, buf, n, DEFAULT_RW_FLAGS );
             }
 
-            socket_type _fd;
+            socket_type _fd = INVALID;
         };
 
         struct SSLSocket final : SocketInterface {
@@ -382,7 +384,8 @@ namespace cpp_http {
             }
 
             auto is_readable( const time_t read_timeout ) const noexcept -> bool override {
-                return select_with_timeout( _fd, read_timeout, 0 ) > 0;
+                const auto rc = select_with_timeout( _fd, read_timeout, 0 );
+                return rc > 0;
             }
 
             auto open_connection( const std::string_view domain, const std::string_view port ) noexcept -> bool override {
@@ -451,18 +454,17 @@ namespace cpp_http {
                 return SSL_write( _ssl, buf, static_cast<int>( n ) );
             }
 
-            SSL_CTX *_ctx;
-            SSL *_ssl;
-            socket_type _fd;
+            SSL_CTX *_ctx = nullptr;
+            SSL *_ssl = nullptr;
+            socket_type _fd = INVALID;
         };
 
         struct SocketStream {
             SocketStream( ) = delete;
 
-            SocketStream( SocketInterface &si, const std::string_view domain, const std::string_view port,
-                          const size_t initial_reserved_size )
-                : _si{si}, _position{0} {
-                _buffer.reserve( initial_reserved_size );
+            SocketStream( SocketInterface &si, const std::string_view domain, const std::string_view port, const size_t buffer_size )
+                : _si{si}, _position{0}, _buffer_size{buffer_size} {
+                _buffer.reserve( buffer_size );
                 _si.open_connection( domain, port );
             }
 
@@ -510,49 +512,37 @@ namespace cpp_http {
                 return static_cast<size_t>( sent ) == sv.size( );
             }
 
-            auto read( char *buf, const size_t sz, ssize_t &readed_bytes ) {
-                const auto size = _si.read( buf, sz );
-                readed_bytes = size;
-
-                if ( size < 0 ) {
-                    // "Failed to read data from " + domain + ":" + port
-                    return false;
-                } else if ( size == 0 ) {
-                    return true;
+            auto read_to_buffer( const size_t read_bytes, const time_t read_timeout, ssize_t &readed_bytes ) {
+                if ( !is_readable( read_timeout ) ) {
+                    readed_bytes = -1;
+                    return;
                 }
 
-                return false;
-            }
-
-            auto read( ssize_t &readed_bytes ) {
                 char temp_buffer[DEFAULT_READ_BUFFER_SIZE] = {};
 
-                if ( read( temp_buffer, sizeof temp_buffer, readed_bytes ) ) {
-                    return true;
+                const auto size = std::min( DEFAULT_READ_BUFFER_SIZE, read_bytes );
+                const auto len = _si.read( temp_buffer, size );
+                readed_bytes = len;
+
+                if ( len > 0 ) {
+                    append( std::string_view{&temp_buffer[0], static_cast<size_t>( readed_bytes )} );
                 }
-
-                if ( readed_bytes < 0 ) {
-                    // "Failed to read data from " + domain + ":" + port
-                    return false;
-                } else if ( readed_bytes == 0 ) {
-                    return true;
-                }
-
-                append( std::string_view{&temp_buffer[0], static_cast<size_t>( readed_bytes )} );
-
-                return false;
             }
 
-            auto buffered_read( const size_t sz ) -> std::optional<RawBuffer> {
+            auto buffered_read( ) -> std::optional<RawBuffer> {
                 ssize_t readed_bytes = 0;
-                while ( _buffer.size( ) - _position < sz ) {
-                    read( readed_bytes );
+                while ( _buffer.size( ) - _position < _buffer_size ) {
+                    read_to_buffer( DEFAULT_READ_BUFFER_SIZE, 5, readed_bytes );
                     if ( readed_bytes == -1 ) {
+                        if ( ( errno == EAGAIN ) || ( errno == EWOULDBLOCK ) ) {
+                            continue;
+                        }
+
                         // "Failed to read data from " + domain + ":" + port
                         RawBuffer buff{&_buffer[0] + _position, &_buffer[0] + _buffer.size( )};
                         return {buff};
                     } else if ( readed_bytes > 0 ) {
-                        auto end = _buffer.size( ) > sz ? &_buffer[0] + sz : &_buffer[0] + _buffer.size( );
+                        auto end = _buffer.size( ) > _buffer_size ? &_buffer[0] + _buffer_size : &_buffer[0] + _buffer.size( );
                         RawBuffer buff{&_buffer[0] + _position, end};
                         return {buff};
                     } else if ( readed_bytes == 0 ) {
@@ -590,6 +580,7 @@ namespace cpp_http {
 
             SocketInterface &_si;
             size_t _position = 0;
+            size_t _buffer_size = 0;
             RawBuffer _buffer;
         };
 
@@ -667,7 +658,7 @@ namespace cpp_http {
             ssize_t total = 0;
             while ( true ) {
 
-                auto buf = bs.buffered_read( DEFAULT_READ_BUFFER_SIZE );
+                auto buf = bs.buffered_read( );
                 if ( !buf )
                     break;
 
@@ -683,14 +674,18 @@ namespace cpp_http {
             return static_cast<size_t>( total ) >= lenght;
         }
 
-        inline auto read_content_without_lenght( SocketStream &bs, Response &res ) {
-            while ( true ) {
-                auto buf = bs.buffered_read( DEFAULT_READ_BUFFER_SIZE );
-                if ( !buf )
-                    break;
+        inline auto read_content_without_length( SocketStream &bs, Response &res ) {
+            while ( !bs.is_empty( ) ) {
+                auto buf = bs.buffered_read( );
+                if ( !buf ) {
+                    return false;
+                }
 
                 res._body.insert( std::end( res._body ), std::begin( buf.value( ) ), std::end( buf.value( ) ) );
+                bs._position += buf.value( ).size( );
             }
+
+            return true;
         }
 
         inline auto read_content_chunked( SocketStream &bs, Response &res ) {
@@ -700,7 +695,7 @@ namespace cpp_http {
             auto chunk_len = 0;
 
             while ( true ) {
-                auto buf = bs.buffered_read( DEFAULT_READ_BUFFER_SIZE );
+                auto buf = bs.buffered_read( );
 
                 if ( !buf || buf.value( ).empty( ) )
                     break;
@@ -733,7 +728,7 @@ namespace cpp_http {
                 auto len = get_header_value<uint64_t>( res._headers, HeadersKeys::CONTENT_LENGHT );
                 ret = read_content_with_lenght( bs, len.value( ), res );
             } else {
-                read_content_without_lenght( bs, res );
+                ret = read_content_without_length( bs, res );
             }
 
             return ret;
@@ -786,7 +781,7 @@ namespace cpp_http {
         const auto is_post_method = method == "POST";
 
         std::string request_data;
-        request_data.reserve( DEFAULT_REQUEST_SIZE );
+        request_data.reserve( DEFAULT_WRITE_BUFFER_SIZE );
         request_data.append( method.begin( ), method.end( ) );
         request_data += " " + path;
         if ( is_get_method && !body.empty( ) ) {
@@ -816,7 +811,7 @@ namespace cpp_http {
 
         // Read response
         while ( sockstream.is_readable( settings.socket_read_timeout ) ) {
-            auto buf = sockstream.buffered_read( DEFAULT_READ_BUFFER_SIZE );
+            auto buf = sockstream.buffered_read( );
             if ( !buf ) {
                 break;
             }
