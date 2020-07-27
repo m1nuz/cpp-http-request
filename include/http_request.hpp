@@ -512,29 +512,33 @@ namespace cpp_http {
                 return static_cast<size_t>( sent ) == sv.size( );
             }
 
-            auto read_to_buffer( const size_t read_bytes, const time_t read_timeout, ssize_t &readed_bytes ) {
+            auto read_to_buffer( const size_t read_bytes, const time_t read_timeout, ssize_t &readed_bytes ) -> int {
                 if ( !is_readable( read_timeout ) ) {
                     readed_bytes = -1;
-                    return;
+                    return 0;
                 }
 
                 char temp_buffer[DEFAULT_READ_BUFFER_SIZE] = {};
 
                 const auto size = std::min( DEFAULT_READ_BUFFER_SIZE, read_bytes );
                 const auto len = _si.read( temp_buffer, size );
+                const auto err = errno;
                 readed_bytes = len;
 
                 if ( len > 0 ) {
                     append( std::string_view{&temp_buffer[0], static_cast<size_t>( readed_bytes )} );
+                    return 0;
                 }
+
+                return err;
             }
 
             auto buffered_read( ) -> std::optional<RawBuffer> {
                 ssize_t readed_bytes = 0;
                 while ( _buffer.size( ) - _position < _buffer_size ) {
-                    read_to_buffer( DEFAULT_READ_BUFFER_SIZE, 5, readed_bytes );
+                    const auto err = read_to_buffer( DEFAULT_READ_BUFFER_SIZE, 5, readed_bytes );
                     if ( readed_bytes == -1 ) {
-                        if ( ( errno == EAGAIN ) || ( errno == EWOULDBLOCK ) ) {
+                        if ( ( err == EAGAIN ) || ( err == EWOULDBLOCK ) ) {
                             continue;
                         }
 
